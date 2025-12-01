@@ -1,14 +1,14 @@
 """
 Descriptive Agent - "What happened?"
 Handles queries about historical data and trends
-NOW WITH INTEGRATED CHART GENERATION
+Uses RAG Retriever for semantic-enhanced retrieval with hierarchy support
 """
-from typing import Dict, Any, List
+from typing import Dict, Any
 import pandas as pd
+import plotly.graph_objects as go
 
 from src.models.query import QueryClassification
-from src.services.mock_data_service import MockDataService
-from src.utils.visualizer import FinancialVisualizer
+from src.services.rag_retriever import RAGRetriever
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,205 +18,187 @@ class DescriptiveAgent:
     """
     Handles "What happened?" queries.
     Retrieves and presents historical financial/operational data.
-    NOW RETURNS BOTH TEXT AND CHART JSON.
     """
     
     def __init__(self):
-        self.data_service = MockDataService()
-        self.visualizer = FinancialVisualizer()
+        self.retriever = RAGRetriever()
+        logger.info("Descriptive Agent initialized with RAG")
     
     def retrieve(self, classification: QueryClassification) -> Dict[str, Any]:
         """
-        Retrieve data for descriptive queries.
-        
-        Args:
-            classification: Classified query with extracted entities
-        
-        Returns:
-            Dictionary with retrieved data, text response, AND chart JSON
+        Retrieve data for descriptive queries using RAG.
         """
         logger.info(
-            "Descriptive retrieval",
+            "Descriptive retrieval with RAG",
             metrics=classification.metrics,
-            temporal=classification.temporal.model_dump(),
         )
         
-        # Determine which metrics to retrieve
-        metrics = classification.metrics if classification.metrics else ['revenue', 'ebitda']
+        # Get data from RAG retriever
+        result = self.retriever.retrieve_for_descriptive(classification)
         
-        # Get financial summary data
-        df = self.data_service.get_financial_summary(
-            start_period=classification.temporal.start_period,
-            end_period=classification.temporal.end_period,
-        )
+        # Generate chart with proper data
+        chart_json = self._create_chart(result)
+        result['chart'] = chart_json
         
-        # Map common metric aliases
-        metric_mapping = {
-            'ebitda': 'ebitda',
-            'revenue': 'revenue',
-            'gross_margin': 'gross_margin_pct',
-            'gross_profit': 'gross_profit',
-            'net_income': 'net_income',
-            'operating_expenses': 'opex',
-            'opex': 'opex',
-        }
-        
-        # Map metrics to actual column names
-        mapped_metrics = []
-        for m in metrics:
-            m_lower = m.lower()
-            if m_lower in df.columns:
-                mapped_metrics.append(m_lower)
-            elif m_lower in metric_mapping and metric_mapping[m_lower] in df.columns:
-                mapped_metrics.append(metric_mapping[m_lower])
-        
-        if not mapped_metrics:
-            # Default to key metrics
-            mapped_metrics = ['revenue', 'ebitda']
-        
-        # Select relevant columns
-        columns_to_include = ['period', 'fiscal_year', 'fiscal_quarter'] + mapped_metrics
-        df_result = df[columns_to_include]
-        
-        # Calculate summary statistics
-        summary = {}
-        for col in mapped_metrics:
-            summary[col] = {
-                'min': float(df_result[col].min()),
-                'max': float(df_result[col].max()),
-                'mean': float(df_result[col].mean()),
-                'latest': float(df_result[col].iloc[-1]),
-            }
-        
-        # Calculate trends
-        trends = {}
-        for col in mapped_metrics:
-            values = df_result[col].values
-            if len(values) >= 2:
-                growth = ((values[-1] / values[0]) - 1) * 100 if values[0] != 0 else 0
-                trends[col] = {
-                    'direction': 'increasing' if growth > 5 else 'decreasing' if growth < -5 else 'stable',
-                    'growth_pct': round(growth, 2),
-                }
-        
-        # Generate chart JSON
-        chart_json = self._create_chart(df_result, mapped_metrics, classification)
-        
-        return {
-            'data': df_result.to_dict('records'),
-            'summary': summary,
-            'trends': trends,
-            'row_count': len(df_result),
-            'chart': chart_json,  # NEW: Include chart JSON
-            'source': 'mock_data_service',
-        }
+        return result
     
-    def _create_chart(
-        self,
-        df: pd.DataFrame,
-        metrics: List[str],
-        classification: QueryClassification
-    ) -> Dict[str, Any]:
+    def _create_chart(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Create appropriate chart based on data and query context.
-        
-        Returns:
-            Plotly figure as JSON dict
+        Create trend chart from retrieved data.
         """
-        # Decide chart type based on data characteristics
-        num_periods = len(df)
-        num_metrics = len(metrics)
+        fig = go.Figure()
         
-        if num_periods >= 4 and num_metrics >= 1:
-            # Trend over time - use line chart
-            chart_type = 'line'
-            title = f"CFG Ukraine - {', '.join([m.replace('_', ' ').title() for m in metrics])} Trend"
-            chart_json = self.visualizer.create_trend_chart_json(
-                df,
-                metrics=metrics,
-                title=title
-            )
-        elif num_periods <= 4 and num_metrics == 1:
-            # Few periods, single metric - use bar chart
-            chart_type = 'bar'
-            title = f"CFG Ukraine - {metrics[0].replace('_', ' ').title()} Comparison"
-            chart_json = self.visualizer.create_comparison_chart_json(
-                df,
-                metric=metrics[0],
-                title=title
-            )
-        elif num_metrics == 2 and any(m.endswith('_pct') or m.endswith('_margin') for m in metrics):
-            # Two metrics with different scales - use dual axis
-            chart_type = 'dual_axis'
-            title = f"CFG Ukraine - {metrics[0].replace('_', ' ').title()} vs {metrics[1].replace('_', ' ').title()}"
-            chart_json = self.visualizer.create_dual_axis_chart_json(
-                df,
-                metric1=metrics[0],
-                metric2=metrics[1],
-                title=title
-            )
-        else:
-            # Default to line chart
-            chart_type = 'line'
-            title = f"CFG Ukraine - Financial Metrics"
-            chart_json = self.visualizer.create_trend_chart_json(
-                df,
-                metrics=metrics[:3],  # Limit to 3 metrics for clarity
-                title=title
-            )
+        records = data.get('data', [])
+        metric = data.get('metric', 'Amount')
+        year = data.get('year', 'FY24')
         
-        logger.info(f"Created {chart_type} chart with {len(metrics)} metrics")
+        if records and len(records) > 0:
+            periods = [r['Period'] for r in records]
+            amounts = [r['Amount'] for r in records]
+            
+            # Determine chart color based on trend
+            trend = data.get('trend', {})
+            direction = trend.get('direction', 'stable')
+            
+            if direction == 'increasing':
+                line_color = '#27AE60'  # Green
+            elif direction == 'decreasing':
+                line_color = '#E74C3C'  # Red
+            else:
+                line_color = '#2E86AB'  # Blue
+            
+            # Add line trace
+            fig.add_trace(go.Scatter(
+                x=periods,
+                y=amounts,
+                mode='lines+markers',
+                name=f'{metric} (SAR)',
+                line=dict(color=line_color, width=3),
+                marker=dict(size=10, color=line_color),
+                hovertemplate='<b>%{x}</b><br>' + f'{metric}: ' + 'SAR %{y:,.0f}<extra></extra>',
+                fill='tozeroy',
+                fillcolor=f'rgba({44 if direction == "increasing" else 231}, {160 if direction == "increasing" else 76}, {44 if direction == "increasing" else 60}, 0.1)',
+            ))
+            
+            # Add bar trace as secondary visualization
+            fig.add_trace(go.Bar(
+                x=periods,
+                y=amounts,
+                name=f'{metric} (Bar)',
+                marker=dict(
+                    color=amounts,
+                    colorscale='Blues',
+                    showscale=False,
+                ),
+                opacity=0.3,
+                hovertemplate='<b>%{x}</b><br>' + f'{metric}: ' + 'SAR %{y:,.0f}<extra></extra>',
+                visible='legendonly',  # Hidden by default, can toggle
+            ))
         
-        return chart_json
+        # Chart title with metric name
+        chart_title = f"CFG Ukraine - {metric.upper() if metric else 'Financial'} Trend ({year})"
+        
+        fig.update_layout(
+            title=dict(
+                text=chart_title,
+                font=dict(size=16, color='#2C3E50'),
+            ),
+            xaxis_title="Period",
+            yaxis_title=f"{metric} (SAR)" if metric else "Amount (SAR)",
+            template='plotly_white',
+            height=400,
+            width=None,  # Auto width
+            hovermode='x unified',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1,
+            ),
+            margin=dict(l=60, r=30, t=80, b=60),
+            yaxis=dict(
+                tickformat=',.0f',
+                gridcolor='#E5E5E5',
+            ),
+            xaxis=dict(
+                gridcolor='#E5E5E5',
+            ),
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+        )
+        
+        return fig.to_dict()
     
     def format_response(self, data: Dict[str, Any], classification: QueryClassification) -> str:
         """
         Format retrieved data into natural language response.
         """
-        df = pd.DataFrame(data['data'])
-        summary = data['summary']
-        trends = data['trends']
+        summary = data.get('summary', {})
+        trend = data.get('trend', {})
+        year = data.get('year', 'FY24')
+        metric = data.get('metric', None)
+        metric_filtered = data.get('metric_filtered', False)
+        account_count = data.get('account_count', 0)
         
-        # Build response
         response_parts = []
         
-        # Introduction
-        metrics_str = ', '.join(classification.metrics) if classification.metrics else 'key metrics'
-        period_str = f"from {df['period'].iloc[0]} to {df['period'].iloc[-1]}" if len(df) > 1 else f"for {df['period'].iloc[0]}"
+        # Dynamic title based on metric
+        if metric and metric_filtered:
+            title = f"📊 **CFG Ukraine {metric.upper()} Summary ({year})**"
+        else:
+            title = f"📊 **CFG Ukraine Financial Summary ({year})**"
         
-        response_parts.append(f"Here's the {metrics_str} data for CFG Ukraine {period_str}:")
+        response_parts.append(title)
+        response_parts.append("")
         
-        # Latest values
-        response_parts.append("\n📊 Latest Period:")
-        latest_period = df['period'].iloc[-1]
-        for col in df.columns:
-            if col not in ['period', 'fiscal_year', 'fiscal_quarter']:
-                latest_val = df[col].iloc[-1]
-                if col.endswith('_pct'):
-                    response_parts.append(f"   • {col.replace('_', ' ').title()}: {latest_val:.2f}%")
-                else:
-                    response_parts.append(f"   • {col.replace('_', ' ').title()}: ${latest_val:,.0f}")
+        # Show metric info if filtered
+        if metric_filtered and account_count > 0:
+            response_parts.append(f"*Showing {metric.upper()} data from {account_count} related accounts*")
+            response_parts.append("")
         
-        # Trends
-        if trends:
-            response_parts.append("\n📈 Trends:")
-            for metric, trend_data in trends.items():
-                direction_emoji = "📈" if trend_data['direction'] == 'increasing' else "📉" if trend_data['direction'] == 'decreasing' else "➡️"
-                response_parts.append(
-                    f"   {direction_emoji} {metric.replace('_', ' ').title()}: "
-                    f"{trend_data['direction']} ({trend_data['growth_pct']:+.1f}% over period)"
-                )
+        # Summary statistics
+        response_parts.append("**Key Metrics:**")
+        response_parts.append(f"   • Total Amount: SAR {summary.get('total', 0):,.0f}")
+        response_parts.append(f"   • Monthly Average: SAR {summary.get('average', 0):,.0f}")
+        response_parts.append(f"   • Minimum: SAR {summary.get('min', 0):,.0f}")
+        response_parts.append(f"   • Maximum: SAR {summary.get('max', 0):,.0f}")
+        response_parts.append(f"   • Periods: {summary.get('periods', 0)}")
+        response_parts.append("")
         
-        # Summary stats
-        response_parts.append("\n📋 Summary:")
-        for metric, stats in summary.items():
-            if metric.endswith('_pct'):
-                response_parts.append(f"   • {metric.replace('_', ' ').title()}: Min {stats['min']:.2f}%, Max {stats['max']:.2f}%, Avg {stats['mean']:.2f}%")
+        # Trend analysis
+        if trend:
+            direction = trend.get('direction', 'stable')
+            growth = trend.get('growth_pct', 0)
+            
+            if direction == 'increasing':
+                emoji = "📈"
+                trend_text = "Increasing"
+            elif direction == 'decreasing':
+                emoji = "📉"
+                trend_text = "Decreasing"
             else:
-                response_parts.append(f"   • {metric.replace('_', ' ').title()}: Min ${stats['min']:,.0f}, Max ${stats['max']:,.0f}, Avg ${stats['mean']:,.0f}")
+                emoji = "➡️"
+                trend_text = "Stable"
+            
+            response_parts.append(f"**Trend Analysis:** {emoji}")
+            response_parts.append(f"   • Direction: {trend_text}")
+            response_parts.append(f"   • Growth: {growth:+.1f}%")
+            response_parts.append(f"   • Start Value: SAR {trend.get('start_value', 0):,.0f}")
+            response_parts.append(f"   • End Value: SAR {trend.get('end_value', 0):,.0f}")
+            response_parts.append("")
         
-        # NEW: Mention chart availability
-        response_parts.append("\n📊 Visual chart included in response.")
+        # Relevant accounts from semantic search
+        relevant_accounts = data.get('relevant_accounts', [])
+        if relevant_accounts:
+            response_parts.append("🔍 **Related Accounts (Semantic Search):**")
+            for acc in relevant_accounts[:3]:
+                score = acc.get('score', 0)
+                response_parts.append(f"   • {acc['account']} (relevance: {score:.0%})")
+            response_parts.append("")
+        
+        response_parts.append("📊 Interactive trend chart included in response.")
+        response_parts.append("🔗 Data source: Microsoft Fabric OneLake + RAG")
         
         return '\n'.join(response_parts)
 
@@ -227,17 +209,17 @@ if __name__ == "__main__":
     import json
     
     print("=" * 60)
-    print("📊 Descriptive Agent Test - WITH CHARTS")
+    print("📊 Descriptive Agent Test - With Hierarchy")
     print("=" * 60)
     
     classifier = QueryClassifierAgent()
     agent = DescriptiveAgent()
     
-    # Test queries
     test_queries = [
-        "Show me CFG Ukraine EBITDA trend for the last 4 years",
-        "What was the revenue in 2024?",
-        "Display gross margin for the last 8 quarters",
+        "Show me the EBITDA trend for FY24",
+        "What was the revenue in FY24?",
+        "Display gross profit trend",
+        "Show me net income for FY24",
     ]
     
     for query in test_queries:
@@ -245,28 +227,20 @@ if __name__ == "__main__":
         print(f"Query: {query}")
         print('='*60)
         
-        # Classify
         classification = classifier.classify(query)
         print(f"Category: {classification.category.value}")
         print(f"Metrics: {classification.metrics}")
         
-        # Retrieve (includes chart JSON now!)
         data = agent.retrieve(classification)
-        print(f"\n✅ Retrieved {data['row_count']} records")
-        print(f"✅ Chart included: {data['chart']['data'][0]['type']} chart")
-        print(f"✅ Chart has {len(data['chart']['data'])} traces")
+        print(f"\n✅ Metric filtered: {data.get('metric_filtered', False)}")
+        print(f"✅ Metric: {data.get('metric', 'N/A')}")
+        print(f"✅ Account count: {data.get('account_count', 'N/A')}")
+        print(f"✅ Data rows: {data['row_count']}")
+        print(f"✅ Chart included: {data.get('chart') is not None}")
         
-        # Format text response
         response = agent.format_response(data, classification)
-        print(f"\n📝 Text Response:\n{response}")
-        
-        # Verify chart JSON is serializable
-        try:
-            chart_json_str = json.dumps(data['chart'])
-            print(f"\n✅ Chart JSON serializable: {len(chart_json_str)} characters")
-        except Exception as e:
-            print(f"\n❌ Chart JSON error: {e}")
+        print(f"\n📝 Response Preview:\n{response[:500]}...")
     
     print("\n" + "=" * 60)
-    print("✅ Descriptive Agent now returns TEXT + CHART!")
+    print("✅ Descriptive Agent with Hierarchy Complete!")
     print("=" * 60)

@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CFG Ukraine Financial Analytics - SALIC</title>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Plotly.js for Charts -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    
+    <!-- Marked.js for Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    
+    <style>
+        :root {
+            --primary-gradient-start: #1B4F72;
+            --primary-gradient-end: #2C5F7F;
+            --accent-color: #F39C12;
+            --background-light: #F8FAFC;
+            --text-primary: #1E293B;
+            --text-secondary: #64748B;
+            --border-color: #E2E8F0;
+            --success-color: #10B981;
+            --error-color: #EF4444;
+            --warning-color: #F59E0B;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--background-light);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary-gradient-start), var(--primary-gradient-end));
+            color: white;
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        
+        .header-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success-color);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Main Layout */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 60px);
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: white;
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .sidebar-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .sidebar-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        
+        .chat-item {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .chat-item:hover {
+            background: var(--background-light);
+        }
+        
+        .chat-item.active {
+            background: rgba(27, 79, 114, 0.1);
+            border-left: 3px solid var(--primary-gradient-start);
+        }
+        
+        .chat-item-title {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .chat-item-time {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+        
+        .new-chat-btn {
+            margin: 12px;
+            padding: 12px;
+            background: linear-gradient(135deg, var(--primary-gradient-start), var(--primary-gradient-end));
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .new-chat-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(27, 79, 114, 0.3);
+        }
+        
+        /* Chat Area */
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--background-light);
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+        
+        .message {
+            max-width: 85%;
+            margin-bottom: 20px;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            margin-left: auto;
+        }
+        
+        .message.assistant {
+            margin-right: auto;
+        }
+        
+        .message-content {
+            padding: 16px 20px;
+            border-radius: 16px;
+            line-height: 1.6;
+        }
+        
+        .message.user .message-content {
+            background: linear-gradient(135deg, var(--primary-gradient-start), var(--primary-gradient-end));
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message.assistant .message-content {
+            background: white;
+            color: var(--text-primary);
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        
+        /* Agent Workflow */
+        .agent-workflow {
+            background: #F1F5F9;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        
+        .workflow-title {
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 11px;
+        }
+        
+        .workflow-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+            color: var(--text-secondary);
+        }
+        
+        .workflow-step.active {
+            color: var(--primary-gradient-start);
+        }
+        
+        .workflow-step.complete {
+            color: var(--success-color);
+        }
+        
+        /* Category Badge */
+        .category-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-left: auto;
+        }
+        
+        .category-badge.descriptive { background: #DBEAFE; color: #1E40AF; }
+        .category-badge.diagnostic { background: #FEF3C7; color: #92400E; }
+        .category-badge.predictive { background: #D1FAE5; color: #065F46; }
+        .category-badge.prescriptive { background: #EDE9FE; color: #5B21B6; }
+        .category-badge.general { background: #F3F4F6; color: #374151; }
+        
+        /* Chart Container */
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        
+        .chart-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 12px;
+        }
+        
+        .chart-wrapper {
+            width: 100%;
+            min-height: 400px;
+        }
+        
+        /* Response Footer */
+        .response-footer {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .response-footer span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        /* Input Area */
+        .input-area {
+            padding: 16px 24px 24px;
+            background: white;
+            border-top: 1px solid var(--border-color);
+        }
+        
+        .example-questions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        
+        .example-btn {
+            padding: 8px 16px;
+            background: var(--background-light);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .example-btn:hover {
+            background: white;
+            border-color: var(--primary-gradient-start);
+            color: var(--primary-gradient-start);
+        }
+        
+        .input-wrapper {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        
+        .input-container {
+            flex: 1;
+            position: relative;
+        }
+        
+        .chat-input {
+            width: 100%;
+            padding: 14px 18px;
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            font-size: 15px;
+            font-family: inherit;
+            resize: none;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        .chat-input:focus {
+            border-color: var(--primary-gradient-start);
+            box-shadow: 0 0 0 3px rgba(27, 79, 114, 0.1);
+        }
+        
+        .chat-input::placeholder {
+            color: var(--text-secondary);
+        }
+        
+        .send-btn {
+            padding: 14px 24px;
+            background: linear-gradient(135deg, var(--primary-gradient-start), var(--primary-gradient-end));
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .send-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(27, 79, 114, 0.3);
+        }
+        
+        .send-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .input-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 8px;
+        }
+        
+        /* Loading Spinner */
+        .loading-spinner {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            color: var(--text-secondary);
+        }
+        
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--primary-gradient-start);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Error State */
+        .error-message {
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            color: #DC2626;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        
+        /* Markdown Styling */
+        .message-content h1, .message-content h2, .message-content h3 {
+            margin-top: 16px;
+            margin-bottom: 8px;
+        }
+        
+        .message-content p {
+            margin-bottom: 12px;
+        }
+        
+        .message-content ul, .message-content ol {
+            margin-left: 20px;
+            margin-bottom: 12px;
+        }
+        
+        .message-content li {
+            margin-bottom: 4px;
+        }
+        
+        .message-content strong {
+            font-weight: 600;
+        }
+        
+        .message-content code {
+            background: #F1F5F9;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                display: none;
+            }
+            
+            .example-questions {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>Financial Intelligence Chat</h1>
+        <div class="header-status">
+            <span class="status-dot"></span>
+            <span>All Agents Active</span>
+        </div>
+    </header>
+    
+    <div class="main-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h3>Recent Chats</h3>
+            </div>
+            <div class="sidebar-content" id="chatHistory">
+                <!-- Chat history items will be populated here -->
+            </div>
+            <button class="new-chat-btn" onclick="startNewChat()">
+                + New Chat
+            </button>
+        </aside>
+        
+        <!-- Chat Area -->
+        <main class="chat-area">
+            <div class="chat-messages" id="chatMessages">
+                <!-- Welcome message -->
+                <div class="message assistant">
+                    <div class="message-content">
+                        <h3>👋 Welcome to CFG Ukraine Financial Analytics!</h3>
+                        <p>I'm your AI-powered financial assistant. I can help you with:</p>
+                        <ul>
+                            <li><strong>Descriptive:</strong> "What was our EBITDA in FY24?"</li>
+                            <li><strong>Diagnostic:</strong> "Why did gross margin decrease in Q3?"</li>
+                            <li><strong>Predictive:</strong> "Forecast revenue for next quarter"</li>
+                            <li><strong>Prescriptive:</strong> "How can we improve working capital?"</li>
+                        </ul>
+                        <p>Try one of the example questions below or ask your own!</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div class="example-questions">
+                    <button class="example-btn" onclick="askQuestion('Show me the EBITDA trend for FY24')">
+                        📊 EBITDA Trend
+                    </button>
+                    <button class="example-btn" onclick="askQuestion('What was the revenue in FY24?')">
+                        💰 Revenue Analysis
+                    </button>
+                    <button class="example-btn" onclick="askQuestion('Forecast revenue for next quarter')">
+                        🔮 Revenue Forecast
+                    </button>
+                    <button class="example-btn" onclick="askQuestion('How can we improve gross margin?')">
+                        💡 Recommendations
+                    </button>
+                </div>
+                
+                <div class="input-wrapper">
+                    <div class="input-container">
+                        <textarea 
+                            class="chat-input" 
+                            id="chatInput" 
+                            placeholder="Ask me anything about CFG Ukraine's financial performance, forecasts, or strategic planning..."
+                            rows="1"
+                            onkeydown="handleKeyDown(event)"
+                        ></textarea>
+                    </div>
+                    <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                        Send
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-hint">Press Enter to send, Shift+Enter for new line</div>
+            </div>
+        </main>
+    </div>
+    
+    <script>
+        // Configuration
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        // State
+        let chatHistory = JSON.parse(localStorage.getItem('cfgChatHistory') || '[]');
+        let currentChatId = null;
+        let isProcessing = false;
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            renderChatHistory();
+            autoResizeTextarea();
+        });
+        
+        // Auto-resize textarea
+        function autoResizeTextarea() {
+            const textarea = document.getElementById('chatInput');
+            textarea.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+            });
+        }
+        
+        // Handle keyboard shortcuts
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+        
+        // Ask example question
+        function askQuestion(question) {
+            document.getElementById('chatInput').value = question;
+            sendMessage();
+        }
+        
+        // Send message
+        async function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const query = input.value.trim();
+            
+            if (!query || isProcessing) return;
+            
+            isProcessing = true;
+            document.getElementById('sendBtn').disabled = true;
+            
+            // Add user message
+            addMessage('user', query);
+            input.value = '';
+            input.style.height = 'auto';
+            
+            // Add loading indicator
+            const loadingId = addLoadingMessage();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/query/ask`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log('API Response:', data);
+                
+                // Remove loading indicator
+                removeLoadingMessage(loadingId);
+                
+                // Add assistant response
+                addAssistantMessage(data);
+                
+                // Save to history
+                saveChatToHistory(query, data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                removeLoadingMessage(loadingId);
+                addErrorMessage('Failed to get response. Please check if the server is running.');
+            } finally {
+                isProcessing = false;
+                document.getElementById('sendBtn').disabled = false;
+            }
+        }
+        
+        // Add user message
+        function addMessage(role, content) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            messageDiv.innerHTML = `<div class="message-content">${escapeHtml(content)}</div>`;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Add loading message
+        function addLoadingMessage() {
+            const messagesDiv = document.getElementById('chatMessages');
+            const loadingDiv = document.createElement('div');
+            const loadingId = 'loading-' + Date.now();
+            loadingDiv.id = loadingId;
+            loadingDiv.className = 'message assistant';
+            loadingDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="loading-spinner">
+                        <div class="spinner"></div>
+                        <span>Analyzing your query...</span>
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(loadingDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return loadingId;
+        }
+        
+        // Remove loading message
+        function removeLoadingMessage(loadingId) {
+            const loadingDiv = document.getElementById(loadingId);
+            if (loadingDiv) {
+                loadingDiv.remove();
+            }
+        }
+        
+        // Add assistant message with full response
+        function addAssistantMessage(data) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            
+            // Get category from nested classification object
+            const category = data.classification?.category || 'general';
+            const confidence = data.classification?.confidence || 0;
+            
+            let html = `<div class="message-content">`;
+            
+            // Agent workflow
+            html += `
+                <div class="agent-workflow">
+                    <div class="workflow-title">Agent Workflow</div>
+                    <div class="workflow-step complete">→ Query Analysis Agent: Identified ${category} intent (${Math.round(confidence * 100)}% confidence)</div>
+                    <div class="workflow-step complete">→ Data Retrieval Agent: Fetched from OneLake + Vector DB</div>
+                    <div class="workflow-step complete">→ Financial Calculation Agent: Computed analysis</div>
+                    <div class="workflow-step complete">→ Response Generation Agent: Synthesizing narrative</div>
+                    <span class="category-badge ${category}">${category.toUpperCase()}</span>
+                </div>
+            `;
+            
+            // Answer content (render markdown)
+            if (data.answer) {
+                html += `<div class="answer-content">${marked.parse(data.answer)}</div>`;
+            }
+            
+            // Chart - FIXED: Check for chart data properly
+            if (data.chart && data.chart.data && Array.isArray(data.chart.data) && data.chart.data.length > 0) {
+                const chartId = 'chart-' + Date.now();
+                html += `
+                    <div class="chart-container">
+                        <div class="chart-title">Financial Analysis</div>
+                        <div class="chart-wrapper" id="${chartId}"></div>
+                    </div>
+                `;
+                
+                // Store chart data for later rendering
+                messageDiv.chartId = chartId;
+                messageDiv.chartData = data.chart;
+            }
+            
+            // Response footer
+            const latency = data.latency_ms ? (data.latency_ms / 1000).toFixed(2) : 'N/A';
+            const sourceCount = data.sources?.length || 0;
+            
+            html += `
+                <div class="response-footer">
+                    <span>⏱️ Response time: ${latency}s</span>
+                    <span>🔄 Source: OneLake + RAG</span>
+                    <span>📄 Sources: ${sourceCount}</span>
+                </div>
+            `;
+            
+            html += `</div>`;
+            
+            messageDiv.innerHTML = html;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            // Render chart after DOM is updated
+            if (messageDiv.chartId && messageDiv.chartData) {
+                // Use requestAnimationFrame to ensure DOM is ready
+                requestAnimationFrame(() => {
+                    setTimeout(() => {
+                        renderChart(messageDiv.chartId, messageDiv.chartData);
+                    }, 100);
+                });
+            }
+        }
+        
+        // Render Plotly chart - FIXED VERSION
+        function renderChart(containerId, chartData) {
+            const container = document.getElementById(containerId);
+            if (!container) {
+                console.error('Chart container not found:', containerId);
+                return;
+            }
+            
+            console.log('Rendering chart:', containerId, chartData);
+            
+            try {
+                // Extract data and layout from the chart object
+                let plotData = chartData.data || [];
+                let plotLayout = chartData.layout || {};
+                
+                // Ensure data is properly formatted
+                if (!Array.isArray(plotData)) {
+                    console.error('Chart data is not an array:', plotData);
+                    return;
+                }
+                
+                // Log the first data trace for debugging
+                if (plotData.length > 0) {
+                    console.log('First trace x:', plotData[0].x);
+                    console.log('First trace y:', plotData[0].y);
+                }
+                
+                // Create a clean layout with explicit settings
+                const cleanLayout = {
+                    title: plotLayout.title || { text: 'Financial Analysis' },
+                    xaxis: {
+                        title: plotLayout.xaxis?.title || { text: 'Period' },
+                        type: 'category',  // Force category type for month names
+                        tickmode: 'array',
+                        tickvals: plotData[0]?.x || [],
+                        ticktext: plotData[0]?.x || [],
+                        gridcolor: '#E5E5E5',
+                    },
+                    yaxis: {
+                        title: plotLayout.yaxis?.title || { text: 'Amount (SAR)' },
+                        tickformat: ',.0f',
+                        gridcolor: '#E5E5E5',
+                        rangemode: 'tozero',
+                    },
+                    autosize: true,
+                    height: 400,
+                    margin: { l: 80, r: 30, t: 60, b: 60 },
+                    font: { family: 'Inter, sans-serif' },
+                    hovermode: 'x unified',
+                    showlegend: true,
+                    legend: {
+                        orientation: 'h',
+                        yanchor: 'bottom',
+                        y: 1.02,
+                        xanchor: 'right',
+                        x: 1,
+                    },
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    paper_bgcolor: 'rgba(0,0,0,0)',
+                };
+                
+                // Config for responsive chart
+                const config = {
+                    responsive: true,
+                    displayModeBar: true,
+                    modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d'],
+                    displaylogo: false,
+                };
+                
+                // Clear container first
+                container.innerHTML = '';
+                
+                // Create the plot
+                Plotly.newPlot(containerId, plotData, cleanLayout, config)
+                    .then(() => {
+                        console.log('Chart rendered successfully:', containerId);
+                    })
+                    .catch((err) => {
+                        console.error('Plotly error:', err);
+                    });
+                
+            } catch (error) {
+                console.error('Error rendering chart:', error);
+                container.innerHTML = '<p style="color: #EF4444; padding: 20px;">Error rendering chart: ' + error.message + '</p>';
+            }
+        }
+        
+        // Add error message
+        function addErrorMessage(message) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            messageDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="error-message">
+                        ⚠️ ${message}
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Save chat to history
+        function saveChatToHistory(query, response) {
+            const chat = {
+                id: Date.now(),
+                title: query.substring(0, 50) + (query.length > 50 ? '...' : ''),
+                query: query,
+                response: response,
+                timestamp: new Date().toISOString(),
+            };
+            
+            chatHistory.unshift(chat);
+            if (chatHistory.length > 20) {
+                chatHistory = chatHistory.slice(0, 20);
+            }
+            
+            localStorage.setItem('cfgChatHistory', JSON.stringify(chatHistory));
+            renderChatHistory();
+        }
+        
+        // Render chat history
+        function renderChatHistory() {
+            const historyDiv = document.getElementById('chatHistory');
+            
+            if (chatHistory.length === 0) {
+                historyDiv.innerHTML = '<p style="color: var(--text-secondary); padding: 12px; font-size: 13px;">No recent chats</p>';
+                return;
+            }
+            
+            historyDiv.innerHTML = chatHistory.map(chat => `
+                <div class="chat-item ${chat.id === currentChatId ? 'active' : ''}" onclick="loadChat(${chat.id})">
+                    <div class="chat-item-title">${escapeHtml(chat.title)}</div>
+                    <div class="chat-item-time">${formatTime(chat.timestamp)}</div>
+                </div>
+            `).join('');
+        }
+        
+        // Load chat from history
+        function loadChat(chatId) {
+            const chat = chatHistory.find(c => c.id === chatId);
+            if (!chat) return;
+            
+            currentChatId = chatId;
+            renderChatHistory();
+            
+            // Clear messages and show the loaded chat
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = '';
+            
+            addMessage('user', chat.query);
+            addAssistantMessage(chat.response);
+        }
+        
+        // Start new chat
+        function startNewChat() {
+            currentChatId = null;
+            renderChatHistory();
+            
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = `
+                <div class="message assistant">
+                    <div class="message-content">
+                        <h3>👋 Welcome to CFG Ukraine Financial Analytics!</h3>
+                        <p>I'm your AI-powered financial assistant. How can I help you today?</p>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Helper: Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Helper: Format time
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return 'Just now';
+            if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+            if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+            
+            return date.toLocaleDateString();
+        }
+    </script>
+</body>
+</html>

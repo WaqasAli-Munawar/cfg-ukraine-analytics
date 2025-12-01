@@ -1,14 +1,13 @@
 """
 Diagnostic Agent - "Why did it happen?"
 Handles queries about root causes and variance analysis
-NOW WITH INTEGRATED WATERFALL CHART GENERATION
+Uses RAG Retriever for semantic-enhanced retrieval
 """
 from typing import Dict, Any
-import pandas as pd
+import plotly.graph_objects as go
 
 from src.models.query import QueryClassification
-from src.services.mock_data_service import MockDataService
-from src.utils.visualizer import FinancialVisualizer
+from src.services.rag_retriever import RAGRetriever
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,128 +17,133 @@ class DiagnosticAgent:
     """
     Handles "Why did it happen?" queries.
     Performs variance analysis and identifies contributing factors.
-    NOW RETURNS BOTH TEXT AND WATERFALL CHART JSON.
     """
     
     def __init__(self):
-        self.data_service = MockDataService()
-        self.visualizer = FinancialVisualizer()
+        self.retriever = RAGRetriever()
+        logger.info("Diagnostic Agent initialized with RAG")
     
     def retrieve(self, classification: QueryClassification) -> Dict[str, Any]:
         """
-        Retrieve variance analysis for diagnostic queries.
-        
-        Args:
-            classification: Classified query with extracted entities
-        
-        Returns:
-            Dictionary with variance data, text response, AND waterfall chart JSON
+        Retrieve variance analysis using RAG.
         """
         logger.info(
-            "Diagnostic retrieval",
+            "Diagnostic retrieval with RAG",
             metrics=classification.metrics,
-            temporal=classification.temporal.model_dump(),
         )
         
-        # Determine metric to analyze
-        metric = classification.metrics[0] if classification.metrics else 'revenue'
+        # Get data from RAG retriever
+        result = self.retriever.retrieve_for_diagnostic(classification)
         
-        # Convert to lowercase
-        metric = metric.lower()
+        # Generate waterfall chart
+        chart_json = self._create_waterfall_chart(result)
+        result['chart'] = chart_json
         
-        # Map metric aliases to actual column names
-        metric_mapping = {
-            'ebitda': 'ebitda',
-            'revenue': 'revenue',
-            'gross_margin': 'gross_margin_pct',
-            'gross_profit': 'gross_profit',
-            'net_income': 'net_income',
-            'opex': 'opex',
-        }
+        return result
+    
+    def _create_waterfall_chart(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create waterfall chart for variance analysis.
+        """
+        variance = data.get('variance', {})
         
-        # Use mapped metric or original if not in mapping
-        mapped_metric = metric_mapping.get(metric, metric)
+        # Build waterfall data
+        labels = [f"Previous ({variance.get('previous_period', 'N/A')})"]
+        values = [variance.get('previous_value', 0)]
+        measures = ['absolute']
         
-        # Determine period
-        period = classification.temporal.end_period or '2024-Q3'
+        # Add factors
+        for factor in variance.get('factors', []):
+            impact = variance.get('previous_value', 0) * (factor['impact_pct'] / 100)
+            labels.append(factor['factor'])
+            values.append(impact)
+            measures.append('relative')
         
-        # Determine comparison type
-        comparison = classification.comparison_type or 'QoQ'
+        # Add current as total
+        labels.append(f"Current ({variance.get('period', 'N/A')})")
+        values.append(variance.get('current_value', 0))
+        measures.append('total')
         
-        # Get variance analysis (use original metric for service)
-        variance = self.data_service.get_variance_analysis(metric, period, comparison)
+        # Create waterfall chart
+        fig = go.Figure(go.Waterfall(
+            name="Variance",
+            orientation="v",
+            measure=measures,
+            x=labels,
+            y=values,
+            connector={"line": {"color": "rgb(63, 63, 63)"}},
+            increasing={"marker": {"color": "#2E86AB"}},
+            decreasing={"marker": {"color": "#E94F37"}},
+            totals={"marker": {"color": "#F18F01"}},
+        ))
         
-        # Get context data (use mapped_metric for DataFrame)
-        df = self.data_service.get_financial_summary()
-        
-        # Generate waterfall chart JSON
-        chart_json = self.visualizer.create_waterfall_chart_json(
-            variance,
-            title=f"{metric.replace('_', ' ').title()} Variance Analysis"
+        fig.update_layout(
+            title=f"CFG Ukraine - Variance Analysis ({variance.get('period', 'N/A')} {variance.get('comparison', 'MoM')})",
+            showlegend=False,
+            template='plotly_white',
+            height=500,
+            width=800,
         )
         
-        return {
-            'variance': variance,
-            'historical_context': df[['period', mapped_metric]].tail(8).to_dict('records'),
-            'chart': chart_json,  # NEW: Include waterfall chart JSON
-            'source': 'mock_data_service',
-        }
+        return fig.to_dict()
     
     def format_response(self, data: Dict[str, Any], classification: QueryClassification) -> str:
         """
-        Format variance analysis into natural language response.
+        Format variance analysis into natural language.
         """
-        variance = data['variance']
+        variance = data.get('variance', {})
         
         response_parts = []
         
         # Introduction
-        metric_name = variance['metric'].replace('_', ' ').title()
-        response_parts.append(f"Analysis of {metric_name} variance for {variance['period']}:")
+        response_parts.append(f"🔍 **Variance Analysis for CFG Ukraine**")
+        response_parts.append("")
         
         # Variance summary
-        current_val = variance['current_value']
-        previous_val = variance['previous_value']
-        variance_val = variance['variance']
-        variance_pct = variance['variance_pct']
+        current = variance.get('current_value', 0)
+        previous = variance.get('previous_value', 0)
+        var_pct = variance.get('variance_pct', 0)
+        var_amount = variance.get('variance', 0)
         
-        direction = "increased" if variance_val > 0 else "decreased"
-        emoji = "📈" if variance_val > 0 else "📉"
+        direction = "increased" if var_amount > 0 else "decreased"
+        emoji = "📈" if var_amount > 0 else "📉"
         
-        response_parts.append(f"\n{emoji} {metric_name} {direction}:")
-        
-        if variance['metric'].endswith('_pct'):
-            response_parts.append(f"   • Current: {current_val:.2f}%")
-            response_parts.append(f"   • Previous ({variance['comparison']}): {previous_val:.2f}%")
-            response_parts.append(f"   • Change: {variance_val:+.2f} percentage points")
-        else:
-            response_parts.append(f"   • Current: ${current_val:,.0f}")
-            response_parts.append(f"   • Previous ({variance['comparison']}): ${previous_val:,.0f}")
-            response_parts.append(f"   • Change: ${variance_val:+,.0f} ({variance_pct:+.1f}%)")
+        response_parts.append(f"**Period Comparison ({variance.get('comparison', 'MoM')}):**")
+        response_parts.append(f"   • Current ({variance.get('period', 'N/A')}): SAR {current:,.0f}")
+        response_parts.append(f"   • Previous ({variance.get('previous_period', 'N/A')}): SAR {previous:,.0f}")
+        response_parts.append(f"   • Change: {emoji} SAR {var_amount:+,.0f} ({var_pct:+.2f}%)")
+        response_parts.append("")
         
         # Contributing factors
-        response_parts.append("\n🔍 Contributing Factors:")
-        for factor in variance['factors']:
-            impact = factor['impact_pct']
-            impact_emoji = "🔺" if impact > 0 else "🔻" if impact < 0 else "➡️"
-            response_parts.append(f"   {impact_emoji} {factor['factor']}: {impact:+.1f}% impact")
+        factors = variance.get('factors', [])
+        if factors:
+            response_parts.append("**Contributing Factors:**")
+            for factor in factors:
+                impact = factor['impact_pct']
+                factor_emoji = "🔺" if impact > 0 else "🔻" if impact < 0 else "➡️"
+                response_parts.append(f"   {factor_emoji} {factor['factor']}: {impact:+.2f}% impact")
+            response_parts.append("")
         
         # Interpretation
-        response_parts.append("\n💡 Interpretation:")
-        if abs(variance_pct) > 10:
-            response_parts.append(f"   This is a significant {direction.lower()} ({abs(variance_pct):.1f}%).")
-        elif abs(variance_pct) > 5:
-            response_parts.append(f"   This is a moderate {direction.lower()} ({abs(variance_pct):.1f}%).")
+        response_parts.append("**Interpretation:**")
+        if abs(var_pct) > 10:
+            response_parts.append(f"   This is a **significant** {direction} ({abs(var_pct):.1f}%).")
+        elif abs(var_pct) > 5:
+            response_parts.append(f"   This is a **moderate** {direction} ({abs(var_pct):.1f}%).")
         else:
-            response_parts.append(f"   This is a minor {direction.lower()} ({abs(variance_pct):.1f}%).")
+            response_parts.append(f"   This is a **minor** change ({abs(var_pct):.1f}%).")
+        response_parts.append("")
         
-        if variance_val > 0:
-            response_parts.append("   Positive variance suggests improved performance or favorable market conditions.")
-        else:
-            response_parts.append("   Negative variance may indicate challenges or unfavorable market conditions.")
+        # Relevant accounts from semantic search
+        relevant_accounts = data.get('relevant_accounts', [])
+        if relevant_accounts:
+            response_parts.append("🔍 **Related Accounts (Semantic Search):**")
+            for acc in relevant_accounts[:3]:
+                response_parts.append(f"   • {acc['account']} (relevance: {acc['score']:.0%})")
+            response_parts.append("")
         
-        # NEW: Mention chart availability
-        response_parts.append("\n📊 Waterfall chart included showing variance breakdown.")
+        response_parts.append("📊 Waterfall chart included showing variance breakdown.")
+        response_parts.append("🔗 Data source: Microsoft Fabric OneLake + RAG")
         
         return '\n'.join(response_parts)
 
@@ -150,17 +154,16 @@ if __name__ == "__main__":
     import json
     
     print("=" * 60)
-    print("🔍 Diagnostic Agent Test - WITH WATERFALL CHARTS")
+    print("🔍 Diagnostic Agent Test - With RAG")
     print("=" * 60)
     
     classifier = QueryClassifierAgent()
     agent = DiagnosticAgent()
     
-    # Test queries
     test_queries = [
-        "Why did revenue drop in Q3 2024?",
-        "Explain the EBITDA variance in 2024-Q2",
-        "What caused the gross margin decrease?",
+        "Why did revenue change in Q3?",
+        "Explain the variance in September",
+        "What caused the amount change?",
     ]
     
     for query in test_queries:
@@ -168,28 +171,16 @@ if __name__ == "__main__":
         print(f"Query: {query}")
         print('='*60)
         
-        # Classify
         classification = classifier.classify(query)
         print(f"Category: {classification.category.value}")
-        print(f"Metrics: {classification.metrics}")
         
-        # Retrieve (includes waterfall chart JSON now!)
         data = agent.retrieve(classification)
-        print(f"\n✅ Variance analysis retrieved")
-        print(f"✅ Chart included: {data['chart']['data'][0]['type']} chart")
-        print(f"✅ Chart has {len(data['chart']['data'][0]['x'])} bars")
+        print(f"\n✅ Variance: {data['variance']['variance_pct']:+.2f}%")
+        print(f"✅ Relevant accounts: {len(data.get('relevant_accounts', []))}")
         
-        # Format text response
         response = agent.format_response(data, classification)
-        print(f"\n📝 Text Response:\n{response}")
-        
-        # Verify chart JSON is serializable
-        try:
-            chart_json_str = json.dumps(data['chart'])
-            print(f"\n✅ Chart JSON serializable: {len(chart_json_str)} characters")
-        except Exception as e:
-            print(f"\n❌ Chart JSON error: {e}")
+        print(f"\n📝 Response:\n{response}")
     
     print("\n" + "=" * 60)
-    print("✅ Diagnostic Agent now returns TEXT + WATERFALL CHART!")
+    print("✅ Diagnostic Agent with RAG Complete!")
     print("=" * 60)

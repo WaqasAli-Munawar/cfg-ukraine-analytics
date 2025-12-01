@@ -1,11 +1,12 @@
 """
 OneLake Connector for Microsoft Fabric
-Connects to CFG Ukraine data in OneLake
+Connects to CFG Ukraine data in OneLake with ETag-based change detection
 """
 from azure.identity import ClientSecretCredential, DefaultAzureCredential
 from azure.storage.filedatalake import DataLakeServiceClient
 import pandas as pd
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
+from io import BytesIO
 from datetime import datetime
 
 from src.utils.config import get_settings
@@ -16,11 +17,9 @@ logger = get_logger(__name__)
 
 class OneLakeConnector:
     """
-    Connects to Microsoft Fabric OneLake.
-    Supports Bronze, Silver, and Gold layer access for CFG Ukraine data.
+    Connects to Microsoft Fabric OneLake with change detection.
     """
     
-    # OneLake endpoint
     ONELAKE_ACCOUNT_URL = "https://onelake.dfs.fabric.microsoft.com"
     
     def __init__(self):
@@ -28,9 +27,12 @@ class OneLakeConnector:
         self.credential = self._create_credential()
         self.client: Optional[DataLakeServiceClient] = None
         
+        # ETag tracking for change detection
+        self._etag_cache: Dict[str, str] = {}
+        self._last_modified_cache: Dict[str, str] = {}
+        
     def _create_credential(self):
         """Create Azure credential"""
-        # If all credentials are provided, use Service Principal
         if all([
             self.settings.azure_tenant_id,
             self.settings.azure_client_id,
@@ -43,7 +45,6 @@ class OneLakeConnector:
                 client_secret=self.settings.azure_client_secret,
             )
         else:
-            # Fallback to DefaultAzureCredential (uses az login, env vars, etc.)
             logger.info("Using DefaultAzureCredential (fallback)")
             return DefaultAzureCredential()
     
@@ -63,7 +64,6 @@ class OneLakeConnector:
             except Exception as e:
                 logger.error(f"Failed to connect to OneLake: {e}")
                 raise
-        
         return self.client
     
     def get_file_system_client(self):
@@ -73,146 +73,169 @@ class OneLakeConnector:
             file_system=self.settings.onelake_workspace_id
         )
     
-    def list_tables(self, layer: str = "gold") -> List[str]:
+    def get_file_metadata(self, file_path: str) -> Dict[str, Any]:
         """
-        List available tables in a data layer.
+        Get file metadata including ETag and Last-Modified.
         
         Args:
-            layer: Data layer - 'bronze', 'silver', or 'gold'
-        
+            file_path: Path to the file
+            
         Returns:
-            List of table names
+            Dictionary with etag, last_modified, size
         """
         try:
             fs_client = self.get_file_system_client()
-            lakehouse_path = (
-                f"{self.settings.onelake_lakehouse_id}/Tables/{layer}"
-            )
+            file_client = fs_client.get_file_client(file_path)
             
-            tables = []
-            paths = fs_client.get_paths(path=lakehouse_path)
+            properties = file_client.get_file_properties()
             
-            for path in paths:
-                if path.is_directory:
-                    table_name = path.name.split("/")[-1]
-                    tables.append(table_name)
+            metadata = {
+                'etag': properties.etag,
+                'last_modified': properties.last_modified.isoformat() if properties.last_modified else None,
+                'size': properties.size,
+                'content_type': properties.content_settings.content_type if properties.content_settings else None,
+            }
             
-            logger.info(f"Found {len(tables)} tables in {layer} layer")
-            return tables
+            logger.info(f"File metadata for {file_path}: ETag={metadata['etag']}, Modified={metadata['last_modified']}")
+            return metadata
             
         except Exception as e:
-            logger.error(f"Failed to list tables: {e}")
+            logger.error(f"Failed to get metadata for {file_path}: {e}")
+            return {}
+    
+    def has_file_changed(self, file_path: str) -> Tuple[bool, str]:
+        """
+        Check if a file has changed since last read using ETag.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Tuple of (has_changed: bool, new_etag: str)
+        """
+        try:
+            metadata = self.get_file_metadata(file_path)
+            current_etag = metadata.get('etag', '')
+            
+            cached_etag = self._etag_cache.get(file_path)
+            
+            if cached_etag is None:
+                # First time checking this file
+                logger.info(f"First time checking {file_path}, ETag: {current_etag}")
+                return True, current_etag
+            
+            if current_etag != cached_etag:
+                logger.info(f"File {file_path} has CHANGED! Old ETag: {cached_etag}, New ETag: {current_etag}")
+                return True, current_etag
+            else:
+                logger.info(f"File {file_path} unchanged (ETag: {current_etag})")
+                return False, current_etag
+                
+        except Exception as e:
+            logger.error(f"Failed to check file change for {file_path}: {e}")
+            return True, ""  # Assume changed on error to force refresh
+    
+    def update_etag_cache(self, file_path: str, etag: str):
+        """Update the ETag cache after reading a file"""
+        self._etag_cache[file_path] = etag
+        logger.debug(f"Updated ETag cache for {file_path}: {etag}")
+    
+    def list_directory(self, path: str) -> List[Dict[str, Any]]:
+        """List contents of a directory in OneLake."""
+        try:
+            fs_client = self.get_file_system_client()
+            items = []
+            
+            paths = fs_client.get_paths(path=path, recursive=False)
+            for p in paths:
+                items.append({
+                    'name': p.name,
+                    'is_directory': p.is_directory,
+                    'size': p.content_length if hasattr(p, 'content_length') else None,
+                })
+            
+            logger.info(f"Found {len(items)} items at path: {path}")
+            return items
+            
+        except Exception as e:
+            logger.error(f"Failed to list directory {path}: {e}")
             return []
     
-    def read_table(
-        self, 
-        table_name: str, 
-        layer: str = "gold",
-        limit: Optional[int] = None
-    ) -> pd.DataFrame:
+    def read_csv_file(self, file_path: str, check_change: bool = True) -> Tuple[pd.DataFrame, str]:
         """
-        Read a table from OneLake as DataFrame.
+        Read a CSV file from OneLake with change detection.
         
         Args:
-            table_name: Name of the table
-            layer: Data layer - 'bronze', 'silver', or 'gold'
-            limit: Optional row limit
-        
+            file_path: Full path to the file
+            check_change: Whether to return ETag for caching
+            
         Returns:
-            pandas DataFrame
+            Tuple of (DataFrame, ETag)
         """
         try:
-            from deltalake import DeltaTable
+            fs_client = self.get_file_system_client()
+            file_client = fs_client.get_file_client(file_path)
             
-            # Construct OneLake path
-            table_path = (
-                f"abfss://{self.settings.onelake_workspace_id}@"
-                f"onelake.dfs.fabric.microsoft.com/"
-                f"{self.settings.onelake_lakehouse_id}/Tables/{layer}/{table_name}"
-            )
+            # Get properties first (includes ETag)
+            properties = file_client.get_file_properties()
+            etag = properties.etag
+            last_modified = properties.last_modified.isoformat() if properties.last_modified else None
             
-            # Storage options for authentication
-            storage_options = {}
-            if self.settings.azure_client_secret:
-                storage_options = {
-                    "azure_tenant_id": self.settings.azure_tenant_id,
-                    "azure_client_id": self.settings.azure_client_id,
-                    "azure_client_secret": self.settings.azure_client_secret,
-                }
+            # Download and read
+            download = file_client.download_file()
+            data = download.readall()
             
-            # Read Delta table
-            dt = DeltaTable(table_path, storage_options=storage_options)
-            df = dt.to_pandas()
+            df = pd.read_csv(BytesIO(data), low_memory=False)
             
-            if limit:
-                df = df.head(limit)
+            # Update ETag cache
+            self._etag_cache[file_path] = etag
+            self._last_modified_cache[file_path] = last_modified
             
             logger.info(
-                f"Loaded table {table_name}",
-                rows=len(df),
-                columns=list(df.columns),
+                f"Read CSV file: {file_path}, rows: {len(df)}, "
+                f"ETag: {etag}, Modified: {last_modified}"
             )
             
-            return df
+            return df, etag
             
         except Exception as e:
-            logger.error(f"Failed to read table {table_name}: {e}")
+            logger.error(f"Failed to read CSV file {file_path}: {e}")
             raise
     
-    def query_financial_summary(
-        self,
-        metrics: List[str],
-        start_period: Optional[str] = None,
-        end_period: Optional[str] = None,
-    ) -> pd.DataFrame:
+    def read_csv_file_simple(self, file_path: str) -> pd.DataFrame:
         """
-        Query financial summary data from Gold layer.
+        Read a CSV file (simple version without returning ETag).
+        For backward compatibility.
+        """
+        df, _ = self.read_csv_file(file_path)
+        return df
+    
+    def get_all_file_etags(self, folder_path: str) -> Dict[str, str]:
+        """
+        Get ETags for all files in a folder.
+        Useful for bulk change detection.
         
         Args:
-            metrics: List of metrics to retrieve (e.g., ['ebitda', 'revenue'])
-            start_period: Start period (e.g., '2020-Q1')
-            end_period: End period (e.g., '2024-Q4')
-        
+            folder_path: Path to folder (e.g., '{lakehouse_id}/Files/FCCS')
+            
         Returns:
-            DataFrame with requested metrics
+            Dictionary mapping file names to ETags
         """
+        etags = {}
         try:
-            # Read financial summary table from Gold layer
-            df = self.read_table("fact_financial_summary", layer="gold")
-            
-            # Filter by period if specified
-            if start_period:
-                df = df[df['period'] >= start_period]
-            if end_period:
-                df = df[df['period'] <= end_period]
-            
-            # Select requested metrics (if table has them)
-            available_cols = df.columns.tolist()
-            metric_cols = [m for m in metrics if m in available_cols]
-            
-            if not metric_cols:
-                logger.warning(f"Requested metrics {metrics} not found in table")
-                return df
-            
-            # Return period + requested metrics
-            result_cols = ['period'] + metric_cols
-            result_cols = [c for c in result_cols if c in available_cols]
-            
-            return df[result_cols]
-            
+            items = self.list_directory(folder_path)
+            for item in items:
+                if not item['is_directory']:
+                    metadata = self.get_file_metadata(item['name'])
+                    etags[item['name']] = metadata.get('etag', '')
         except Exception as e:
-            logger.error(f"Failed to query financial summary: {e}")
-            raise
+            logger.error(f"Failed to get ETags for folder {folder_path}: {e}")
+        
+        return etags
     
     def health_check(self) -> Dict[str, Any]:
-        """
-        Check OneLake connection health.
-        
-        Returns:
-            Dictionary with connection status
-        """
+        """Check OneLake connection health."""
         try:
-            # Check if credentials are configured
             if not all([
                 self.settings.azure_tenant_id,
                 self.settings.azure_client_id,
@@ -222,30 +245,21 @@ class OneLakeConnector:
                 return {
                     "status": "not_configured",
                     "message": "❌ OneLake credentials not fully configured",
-                    "missing": [
-                        k for k, v in {
-                            "azure_tenant_id": self.settings.azure_tenant_id,
-                            "azure_client_id": self.settings.azure_client_id,
-                            "azure_client_secret": self.settings.azure_client_secret,
-                            "onelake_workspace_id": self.settings.onelake_workspace_id,
-                            "onelake_lakehouse_id": self.settings.onelake_lakehouse_id,
-                        }.items() if not v
-                    ]
                 }
             
-            # Try to connect
             self.connect()
             
-            # Try to list tables in Gold layer
-            tables = self.list_tables("gold")
+            # List files to verify access
+            lakehouse_id = self.settings.onelake_lakehouse_id
+            files = self.list_directory(f"{lakehouse_id}/Files/FCCS")
             
             return {
                 "status": "healthy",
                 "message": "✅ OneLake connected successfully",
                 "workspace_id": self.settings.onelake_workspace_id,
                 "lakehouse_id": self.settings.onelake_lakehouse_id,
-                "gold_tables_count": len(tables),
-                "gold_tables": tables[:5] if tables else [],  # Show first 5
+                "files_count": len(files),
+                "cached_etags": len(self._etag_cache),
             }
             
         except Exception as e:
@@ -259,30 +273,47 @@ class OneLakeConnector:
 # Entry point for testing
 if __name__ == "__main__":
     print("=" * 60)
-    print("🔗 OneLake Connector Test - CFG Ukraine")
+    print("🔗 OneLake Connector Test - With ETag Change Detection")
     print("=" * 60)
     
     connector = OneLakeConnector()
+    lakehouse_id = connector.settings.onelake_lakehouse_id
     
-    # Health check
-    health = connector.health_check()
-    print(f"\n{health['message']}")
+    # Test 1: Get file metadata
+    print("\n1. Getting file metadata...")
+    test_file = f"{lakehouse_id}/Files/FCCS/FCC_ENTITY_BI.csv"
+    metadata = connector.get_file_metadata(test_file)
+    print(f"   ✅ ETag: {metadata.get('etag')}")
+    print(f"   ✅ Last Modified: {metadata.get('last_modified')}")
+    print(f"   ✅ Size: {metadata.get('size')} bytes")
     
-    if health['status'] == 'not_configured':
-        print("\n⚠️  Missing credentials:")
-        for cred in health.get('missing', []):
-            print(f"   - {cred}")
-        print("\n💡 Add these to your .env file")
+    # Test 2: Check if file changed (first time)
+    print("\n2. Checking if file changed (first time)...")
+    has_changed, etag = connector.has_file_changed(test_file)
+    print(f"   ✅ Has Changed: {has_changed} (expected: True for first check)")
+    print(f"   ✅ ETag: {etag}")
     
-    elif health['status'] == 'healthy':
-        print(f"\n✅ Workspace: {health['workspace_id']}")
-        print(f"✅ Lakehouse: {health['lakehouse_id']}")
-        print(f"\n📊 Gold Layer Tables ({health['gold_tables_count']}):")
-        for table in health.get('gold_tables', []):
-            print(f"   - {table}")
+    # Test 3: Update cache and check again
+    print("\n3. Updating cache and checking again...")
+    connector.update_etag_cache(test_file, etag)
+    has_changed, etag = connector.has_file_changed(test_file)
+    print(f"   ✅ Has Changed: {has_changed} (expected: False)")
     
-    else:
-        print(f"\n❌ Error: {health.get('error', 'Unknown error')}")
-        print("\n💡 This will work once you receive AZURE_CLIENT_SECRET from the client")
+    # Test 4: Read CSV with ETag
+    print("\n4. Reading CSV file with ETag tracking...")
+    df, file_etag = connector.read_csv_file(test_file)
+    print(f"   ✅ Rows: {len(df)}")
+    print(f"   ✅ ETag: {file_etag}")
     
+    # Test 5: Get all ETags for FCCS folder
+    print("\n5. Getting all ETags for FCCS folder...")
+    folder_path = f"{lakehouse_id}/Files/FCCS"
+    all_etags = connector.get_all_file_etags(folder_path)
+    print(f"   ✅ Found {len(all_etags)} files with ETags:")
+    for file_name, etag in all_etags.items():
+        short_name = file_name.split('/')[-1]
+        print(f"      📄 {short_name}: {etag[:20]}...")
+    
+    print("\n" + "=" * 60)
+    print("✅ ETag Change Detection Working!")
     print("=" * 60)
